@@ -101,9 +101,24 @@ def generate_xml(data):
 
 # UI
 st.set_page_config(page_title="Airbnb PDF Extractor", layout="centered")
-st.title("📄 Airbnb PDF Extractor v.4 (Layout-intelligent)")
+st.title("📄 Airbnb PDF Extractor (Layout-intelligent)")
 
 uploaded_file = st.file_uploader("Upload en PDF med boligoplysninger", type=["pdf"])
 
 if uploaded_file:
-    wit
+    with st.spinner("🔍 Analyserer PDF..."):
+        raw_text, words = extract_text_and_words(uploaded_file)
+        data = extract_data(raw_text, words)
+        xml_file = generate_xml(data)
+
+    st.success("✅ Data udtrukket!")
+
+    st.subheader("🔎 Uddraget information:")
+    for key, val in data.items():
+        if isinstance(val, list):
+            st.markdown(f"**{key}**: {', '.join(val)}")
+        else:
+            st.markdown(f"**{key}**: {val}")
+
+    with open(xml_file, "rb") as f:
+        st.download_button("📥 Download XML", f, file_name="listing_output.xml", mime="application/xml")
