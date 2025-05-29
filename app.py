@@ -4,83 +4,78 @@ import re
 import xml.etree.ElementTree as ET
 import tempfile
 
-# Foruddefinerede værdier
-CATEGORIES = ["Entire Place", "Private Room", "Hotel Room", "Shared Room"]
+# Predefined keyword lists
 AMENITIES = ["Pets Allowed", "TV", "Air Conditioning", "Dedicated workspace", "Washing Machine", "Dryer", "Hair Dryer", "Iron"]
 FEATURES = ["Internet", "Pool", "Hot tub", "EV charger", "Cot", "King size bed", "Gym", "BBQ grill", "Smoking allowed", "Wheelchair access"]
-KITCHENS = ["Full kitchen", "Shared", "Kitchenette", "Outdoor", "No kitchen available"]
-PARKINGS = ["Free parking on premises", "Free parking nearby", "Paid parking on premises", "Paid parking nearby", "No parking available"]
-SAFETY = ["Smoke alarm", "Carbon monoxide alarm", "Exterior security cameras on property"]
+KITCHENS = ["Full kitchen", "Shared kitchen", "Kitchenette", "Outdoor kitchen", "No kitchen"]
+PARKINGS = ["Free parking on premises", "Free parking nearby", "Paid parking on premises", "Paid parking nearby", "No parking"]
+SAFETY = ["Smoke alarm", "Carbon monoxide alarm", "Exterior security cameras"]
 PROPERTY_TYPES = ["Apartment", "Bed & Breakfast", "Cabin", "Condo", "Guest House", "Hostel", "Hotel", "House", "House Boat", "Resort", "Other"]
 LOCATIONS = ["Beachfront", "City Center", "Countryside", "Outside of City Center", "Other"]
-
-# Hjælpefunktioner
-def extract_first_match(text, options):
-    for option in options:
-        if option.lower() in text.lower():
-            return option
-    return ""
-
-def extract_all_matches(text, options):
-    return [opt for opt in options if opt.lower() in text.lower()]
-
-def extract_first_number(text):
-    match = re.search(r"\d+", text)
-    return match.group(0) if match else ""
-
-def extract_urls(text):
-    return re.findall(r"https?://\S+", text)
 
 def parse_pdf(uploaded_file):
     with pdfplumber.open(uploaded_file) as pdf:
         return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
 
-def extract_section(text, section_title, next_titles):
-    pattern = rf"{section_title}\s*:(.*?)(?=(" + "|".join(map(re.escape, next_titles)) + r")\s*:)"
-    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-    return match.group(1).strip() if match else ""
+def guess_title_and_description(lines):
+    title = ""
+    description = ""
+    for line in lines:
+        if len(line.strip()) > 10 and not title:
+            title = line.strip()
+            continue
+        if len(description) < 300 and len(line.strip()) > 30:
+            description += line.strip() + " "
+    return title.strip(), description.strip()
 
-def extract_field(text, label):
-    match = re.search(rf"{label}\s*:\s*(.+)", text, re.IGNORECASE)
-    return match.group(1).strip() if match else ""
+def guess_number_of_guests(text):
+    match = re.search(r"(sleeps|for)\s+(\d+)", text, re.IGNORECASE)
+    return match.group(2) if match else ""
+
+def guess_price(text):
+    match = re.search(r"(kr|€|\\$)?\\s*(\\d{2,5})\\s*(per night|/night|per dag)?", text, re.IGNORECASE)
+    return match.group(2) if match else ""
+
+def extract_items(text, keywords):
+    found = [kw for kw in keywords if kw.lower() in text.lower()]
+    return found
 
 def extract_data(text):
+    lines = text.splitlines()
+    title, description = guess_title_and_description(lines)
+
     return {
-        "Category": extract_first_match(text, CATEGORIES),
-        "Title": extract_field(text, "Listing title"),
-        "Description": extract_field(text, "Listing description"),
-        "NumberOfGuests": extract_first_number(extract_field(text, "Number of guests")),
-        "MinimumStay": extract_first_number(extract_field(text, "Minimum Stay")),
-        "Amenities": extract_all_matches(extract_section(text, "Amenities", ["Features", "Kitchen"]), AMENITIES),
-        "Features": extract_all_matches(extract_section(text, "Features", ["Kitchen", "Parking"]), FEATURES),
-        "Kitchen": extract_first_match(extract_section(text, "Kitchen", ["Parking", "House Rules"]), KITCHENS),
-        "Parking": extract_first_match(extract_section(text, "Parking", ["House Rules", "Cancellation Policy"]), PARKINGS),
-        "HouseRules": extract_section(text, "House Rules", ["Cancellation Policy"]),
-        "CancellationPolicy": extract_section(text, "Cancellation Policy", ["Safety & Property"]),
-        "SafetyAndProperty": extract_all_matches(extract_section(text, "Safety & Property", ["Property Type"]), SAFETY),
-        "PropertyType": extract_first_match(extract_section(text, "Property Type", ["Location"]), PROPERTY_TYPES),
-        "Location": extract_first_match(extract_section(text, "Location", ["Links to this listing"]), LOCATIONS),
-        "ExternalLinks": extract_urls(text),
-        "PricePerNight": extract_first_number(extract_field(text, "Price per night")),
+        "Category": "",  # Heuristik kan forbedres med mere domænespecifik træning
+        "Title": title,
+        "Description": description,
+        "NumberOfGuests": guess_number_of_guests(text),
+        "MinimumStay": "",  # Mangler ofte tydelig tekst
+        "Amenities": extract_items(text, AMENITIES),
+        "Features": extract_items(text, FEATURES),
+        "Kitchen": next((k for k in KITCHENS if k.lower() in text.lower()), ""),
+        "Parking": next((p for p in PARKINGS if p.lower() in text.lower()), ""),
+        "HouseRules": "",  # Kan tilføjes med sektion-markering senere
+        "CancellationPolicy": "",  # Samme her
+        "SafetyAndProperty": extract_items(text, SAFETY),
+        "PropertyType": next((pt for pt in PROPERTY_TYPES if pt.lower() in text.lower()), ""),
+        "Location": next((l for l in LOCATIONS if l.lower() in text.lower()), ""),
+        "ExternalLinks": re.findall(r"https?://\\S+", text),
+        "PricePerNight": guess_price(text),
     }
 
 def generate_xml(data):
     root = ET.Element("Listing")
-    fields = [
+    for key in [
         "Category", "Title", "Description", "NumberOfGuests", "MinimumStay",
         "Amenities", "Features", "Kitchen", "Parking",
         "HouseRules", "CancellationPolicy", "SafetyAndProperty",
         "PropertyType", "Location", "ExternalLinks", "PricePerNight"
-    ]
-
-    for key in fields:
-        value = data[key]
-        if isinstance(value, list):
-            ET.SubElement(root, key).text = ", ".join(value)
-        elif isinstance(value, str):
-            ET.SubElement(root, key).text = value
+    ]:
+        val = data[key]
+        if isinstance(val, list):
+            ET.SubElement(root, key).text = ", ".join(val)
         else:
-            ET.SubElement(root, key).text = ""
+            ET.SubElement(root, key).text = val or ""
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp:
         tree = ET.ElementTree(root)
@@ -89,7 +84,7 @@ def generate_xml(data):
 
 # Streamlit UI
 st.set_page_config(page_title="Airbnb PDF Extractor", layout="centered")
-st.title("🏡 Airbnb PDF Extractor")
+st.title("🏡 Airbnb PDF Extractor v.3 (Heuristik-version)")
 
 uploaded_file = st.file_uploader("Upload en PDF med boligoplysninger", type=["pdf"])
 
