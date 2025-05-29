@@ -14,7 +14,7 @@ SAFETY = ["Smoke alarm", "Carbon monoxide alarm", "Exterior security cameras on 
 PROPERTY_TYPES = ["Apartment", "Bed & Breakfast", "Cabin", "Condo", "Guest House", "Hostel", "Hotel", "House", "House Boat", "Resort", "Other"]
 LOCATIONS = ["Beachfront", "City Center", "Countryside", "Outside of City Center", "Other"]
 
-# Funktionshjælpere
+# Hjælpefunktioner
 def extract_first_match(text, options):
     for option in options:
         if option.lower() in text.lower():
@@ -35,45 +35,53 @@ def parse_pdf(uploaded_file):
     with pdfplumber.open(uploaded_file) as pdf:
         return "\n".join(page.extract_text() for page in pdf.pages if page.extract_text())
 
+def extract_section(text, section_title, next_titles):
+    pattern = rf"{section_title}\s*:(.*?)(?=(" + "|".join(map(re.escape, next_titles)) + r")\s*:)"
+    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+def extract_field(text, label):
+    match = re.search(rf"{label}\s*:\s*(.+)", text, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
 def extract_data(text):
     return {
         "Category": extract_first_match(text, CATEGORIES),
-        "Title": re.search(r"(?i)(title|listing title):\s*(.*)", text),
-        "Description": re.search(r"(?i)(description):\s*(.*)", text),
-        "NumberOfGuests": extract_first_number(re.search(r"guests?:.*", text, re.IGNORECASE).group(0)) if re.search(r"guests?:.*", text, re.IGNORECASE) else "",
-        "MinimumStay": extract_first_number(re.search(r"minimum stay.*", text, re.IGNORECASE).group(0)) if re.search(r"minimum stay.*", text, re.IGNORECASE) else "",
-        "Amenities": extract_all_matches(text, AMENITIES),
-        "Features": extract_all_matches(text, FEATURES),
-        "Kitchen": extract_first_match(text, KITCHENS),
-        "Parking": extract_first_match(text, PARKINGS),
-        "HouseRules": re.search(r"(?i)house rules:\s*(.*?)(?=\n[A-Z])", text, re.DOTALL),
-        "CancellationPolicy": re.search(r"(?i)cancellation policy:\s*(.*?)(?=\n[A-Z])", text, re.DOTALL),
-        "SafetyAndProperty": extract_all_matches(text, SAFETY),
-        "PropertyType": extract_first_match(text, PROPERTY_TYPES),
-        "Location": extract_first_match(text, LOCATIONS),
+        "Title": extract_field(text, "Listing title"),
+        "Description": extract_field(text, "Listing description"),
+        "NumberOfGuests": extract_first_number(extract_field(text, "Number of guests")),
+        "MinimumStay": extract_first_number(extract_field(text, "Minimum Stay")),
+        "Amenities": extract_all_matches(extract_section(text, "Amenities", ["Features", "Kitchen"]), AMENITIES),
+        "Features": extract_all_matches(extract_section(text, "Features", ["Kitchen", "Parking"]), FEATURES),
+        "Kitchen": extract_first_match(extract_section(text, "Kitchen", ["Parking", "House Rules"]), KITCHENS),
+        "Parking": extract_first_match(extract_section(text, "Parking", ["House Rules", "Cancellation Policy"]), PARKINGS),
+        "HouseRules": extract_section(text, "House Rules", ["Cancellation Policy"]),
+        "CancellationPolicy": extract_section(text, "Cancellation Policy", ["Safety & Property"]),
+        "SafetyAndProperty": extract_all_matches(extract_section(text, "Safety & Property", ["Property Type"]), SAFETY),
+        "PropertyType": extract_first_match(extract_section(text, "Property Type", ["Location"]), PROPERTY_TYPES),
+        "Location": extract_first_match(extract_section(text, "Location", ["Links to this listing"]), LOCATIONS),
         "ExternalLinks": extract_urls(text),
-        "PricePerNight": extract_first_number(re.search(r"price.*?(\d+)", text, re.IGNORECASE).group(0)) if re.search(r"price.*?(\d+)", text, re.IGNORECASE) else "",
+        "PricePerNight": extract_first_number(extract_field(text, "Price per night")),
     }
 
 def generate_xml(data):
     root = ET.Element("Listing")
-    ET.SubElement(root, "Category").text = data["Category"]
-    ET.SubElement(root, "Title").text = data["Title"].group(2).strip() if data["Title"] else ""
-    ET.SubElement(root, "Description").text = data["Description"].group(2).strip() if data["Description"] else ""
-    ET.SubElement(root, "NumberOfGuests").text = data["NumberOfGuests"]
-    ET.SubElement(root, "MinimumStay").text = data["MinimumStay"]
-    ET.SubElement(root, "Amenities").text = ", ".join(data["Amenities"])
-    ET.SubElement(root, "Features").text = ", ".join(data["Features"])
-    ET.SubElement(root, "Kitchen").text = data["Kitchen"]
-    ET.SubElement(root, "Parking").text = data["Parking"]
-    ET.SubElement(root, "HouseRules").text = data["HouseRules"].group(1).strip() if data["HouseRules"] else ""
-    ET.SubElement(root, "CancellationPolicy").text = data["CancellationPolicy"].group(1).strip() if data["CancellationPolicy"] else ""
-    ET.SubElement(root, "SafetyAndProperty").text = ", ".join(data["SafetyAndProperty"])
-    ET.SubElement(root, "PropertyType").text = data["PropertyType"]
-    ET.SubElement(root, "Location").text = data["Location"]
-    ET.SubElement(root, "ExternalLinks").text = "\n".join(data["ExternalLinks"])
-    ET.SubElement(root, "PricePerNight").text = data["PricePerNight"]
-    
+    fields = [
+        "Category", "Title", "Description", "NumberOfGuests", "MinimumStay",
+        "Amenities", "Features", "Kitchen", "Parking",
+        "HouseRules", "CancellationPolicy", "SafetyAndProperty",
+        "PropertyType", "Location", "ExternalLinks", "PricePerNight"
+    ]
+
+    for key in fields:
+        value = data[key]
+        if isinstance(value, list):
+            ET.SubElement(root, key).text = ", ".join(value)
+        elif isinstance(value, str):
+            ET.SubElement(root, key).text = value
+        else:
+            ET.SubElement(root, key).text = ""
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xml") as tmp:
         tree = ET.ElementTree(root)
         tree.write(tmp.name, encoding="utf-8", xml_declaration=True)
@@ -81,26 +89,6 @@ def generate_xml(data):
 
 # Streamlit UI
 st.set_page_config(page_title="Airbnb PDF Extractor", layout="centered")
-
-st.markdown("""
-<style>
-h1 {
-    color: #ff5a5f;
-    font-family: 'Helvetica Neue', sans-serif;
-    text-align: center;
-}
-.stButton button {
-    background-color: #ff5a5f;
-    color: white;
-    font-weight: bold;
-    border-radius: 8px;
-}
-.stMarkdown {
-    font-family: 'Arial', sans-serif;
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🏡 Airbnb PDF Extractor")
 
 uploaded_file = st.file_uploader("Upload en PDF med boligoplysninger", type=["pdf"])
@@ -117,10 +105,8 @@ if uploaded_file:
     for key, val in data.items():
         if isinstance(val, list):
             st.markdown(f"**{key}**: {', '.join(val)}")
-        elif isinstance(val, str):
+        else:
             st.markdown(f"**{key}**: {val}")
-        elif val and hasattr(val, "group"):
-            st.markdown(f"**{key}**: {val.group(2).strip() if key in ['Title', 'Description'] else val.group(1).strip()}")
 
     with open(xml_file, "rb") as f:
         st.download_button("📥 Download XML", f, file_name="listing_output.xml", mime="application/xml")
